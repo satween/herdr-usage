@@ -9,6 +9,8 @@ Each agent gets a heatmap calendar of the current month, its Today / 7d / 30d
 token windows, and a split by model. An "All agents" block sits on top when more
 than one agent is in use.
 
+<img src="docs/screenshot.png" alt="The Agent usage pane: an All agents block, then Claude Code, Pi and Codex, each with a month heatmap, Today / 7d / 30d tokens and cost, and a split by model" width="640">
+
 ## Install
 
 Works on macOS and Linux with herdr 0.8.2 or newer and a Rust toolchain
