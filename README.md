@@ -1,6 +1,6 @@
 # herdr-usage
 
-A [herdr](https://herdr.dev) plugin (`herdr-usage`) that shows how many tokens
+A [herdr](https://herdr.dev/tui/) plugin (`herdr-usage`) that shows how many tokens
 your local coding agents spend: Claude Code, Codex, Pi and OpenCode. It reads
 their own session logs, estimates the cost for API-key or metered use, and shows
 the plan's rate-limit windows when you sign in with a subscription.
