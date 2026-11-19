@@ -18,116 +18,14 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
+use crate::prices::estimate_cost;
+
 const SCAN_DAYS: f64 = 35.0; // a margin past the 30d window
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 pub const WINDOWS: [&str; 3] = ["Today", "7d", "30d"];
 
 /// The agents this plugin knows, in their configured default order.
 pub const COLLECTORS: [&str; 4] = ["claude", "codex", "pi", "opencode"];
-
-// ---------------------------------------------------------------------------
-// pricing
-// ---------------------------------------------------------------------------
-
-/// USD per 1M tokens: (input, output, cache_read, cache_write_5m); None = derive
-/// from input (cache read 0.1x, 5-minute cache write 1.25x). A 1-hour cache
-/// write is billed at 2x input, which `estimate_cost` applies on its own.
-type Price = (f64, f64, Option<f64>, Option<f64>);
-
-const EXACT_PRICING: &[(&str, Price)] = &[
-    ("claude-fable-5-2", (8.0, 40.0, Some(0.2), None)),
-    ("claude-fable-5-1", (10.0, 50.0, None, None)),
-    ("claude-fable-5", (10.0, 50.0, None, None)),
-    ("claude-opus-5-5", (4.0, 20.0, Some(0.2), None)),
-    ("claude-opus-5", (5.0, 25.0, None, None)),
-    ("claude-opus-4-8", (5.0, 25.0, None, None)),
-    ("claude-opus-4-7", (5.0, 25.0, None, None)),
-    ("claude-opus-4-6", (5.0, 25.0, None, None)),
-    ("claude-opus-4-5", (5.0, 25.0, None, None)),
-    ("claude-opus-4-1", (15.0, 75.0, None, None)),
-    ("claude-opus-4", (15.0, 75.0, None, None)),
-    ("claude-sonnet-5-5", (2.0, 10.0, Some(0.1), None)),
-    ("claude-sonnet-5", (2.0, 10.0, None, None)),
-    ("claude-sonnet-4-6", (3.0, 15.0, None, None)),
-    ("claude-sonnet-4-5", (3.0, 15.0, None, None)),
-    ("claude-sonnet-4", (3.0, 15.0, None, None)),
-    ("claude-haiku-5-5", (0.1, 0.5, None, None)),
-    ("claude-haiku-4-5", (1.0, 5.0, None, None)),
-    ("gpt-5", (1.25, 10.0, Some(0.125), None)),
-    ("gpt-5-codex", (1.25, 10.0, Some(0.125), None)),
-    ("gpt-4.1", (2.0, 8.0, Some(0.5), None)),
-    ("gpt-4o", (2.5, 10.0, Some(1.25), None)),
-    ("o3", (2.0, 8.0, Some(0.5), None)),
-    ("o4-mini", (1.1, 4.4, Some(0.275), None)),
-];
-
-/// Fallback when the exact model is not in the table (newer model names): the
-/// current generation of each family, so an unknown Claude is not billed at the
-/// Opus 4 / 4.1 rate of $15/$75 that no current Opus charges.
-const FAMILY_PRICING: &[(&str, Price)] = &[
-    ("claude-fable", (8.0, 40.0, Some(0.2), None)),
-    ("claude-opus", (4.0, 20.0, Some(0.2), None)),
-    ("claude-sonnet", (2.0, 10.0, Some(0.1), None)),
-    ("claude-haiku", (0.1, 0.5, None, None)),
-    ("gpt-5", (1.25, 10.0, Some(0.125), None)),
-    ("gpt-4.1", (2.0, 8.0, Some(0.5), None)),
-    ("gpt-4o", (2.5, 10.0, Some(1.25), None)),
-    ("o3", (2.0, 8.0, Some(0.5), None)),
-    ("o4", (1.1, 4.4, Some(0.275), None)),
-];
-
-/// Drops a trailing `-YYYYMMDD` date stamp (claude-opus-4-1-20250805).
-fn strip_date_suffix(model: &str) -> &str {
-    let b = model.as_bytes();
-    if b.len() >= 9 {
-        let tail = &b[b.len() - 9..];
-        if tail[0] == b'-' && tail[1..].iter().all(u8::is_ascii_digit) {
-            return &model[..model.len() - 9];
-        }
-    }
-    model
-}
-
-fn price_for(model: &str) -> Option<Price> {
-    if model.is_empty() {
-        return None;
-    }
-    let lower = model.to_lowercase();
-    let last = lower.rsplit('/').next().unwrap_or("");
-    let m = strip_date_suffix(last);
-    if let Some((_, p)) = EXACT_PRICING.iter().find(|(name, _)| *name == m) {
-        return Some(*p);
-    }
-    FAMILY_PRICING
-        .iter()
-        .find(|(prefix, _)| m.starts_with(prefix))
-        .map(|(_, p)| *p)
-}
-
-/// (cost in USD, known?) for one message's tokens. `cache_write_1h` is the part
-/// of `cache_write` that went to the 1-hour cache (2x input, not 1.25x).
-pub fn estimate_cost(
-    model: &str,
-    inp: i64,
-    cache_read: i64,
-    cache_write: i64,
-    output: i64,
-    cache_write_1h: i64,
-) -> (f64, bool) {
-    let Some((i, o, cr, cw)) = price_for(model) else {
-        return (0.0, false);
-    };
-    let cr = cr.unwrap_or(i * 0.1);
-    let cw = cw.unwrap_or(i * 1.25);
-    let write_1h = cache_write_1h.min(cache_write);
-    let cost = (inp as f64 * i
-        + cache_read as f64 * cr
-        + (cache_write - write_1h) as f64 * cw
-        + write_1h as f64 * i * 2.0
-        + output as f64 * o)
-        / 1_000_000.0;
-    (cost, true)
-}
 
 // ---------------------------------------------------------------------------
 // report model
@@ -714,13 +612,11 @@ fn claude_sub_windows(creds: &Map<String, Value>) -> Vec<SubWindow> {
             }
         }
         _ => {
-            for (key, label) in [
-                ("five_hour", "5h window"),
-                ("seven_day", "week"),
-                ("seven_day_opus", "week (opus)"),
-                ("seven_day_sonnet", "week (sonnet)"),
-            ] {
-                let Some(entry) = obj(data.get(key)) else { continue };
+            // Every window the API sends, so a new per-model weekly limit shows
+            // up without a release: five_hour, seven_day, seven_day_<model>.
+            for (key, entry) in &data {
+                let Some(label) = claude_window_label(key) else { continue };
+                let Some(entry) = entry.as_object() else { continue };
                 if let Some(util) = number(entry.get("utilization")) {
                     windows.push(SubWindow::new(label, util, parse_ts(entry.get("resets_at"))));
                 }
@@ -728,6 +624,16 @@ fn claude_sub_windows(creds: &Map<String, Value>) -> Vec<SubWindow> {
         }
     }
     windows
+}
+
+/// `five_hour` -> "5h window", `seven_day` -> "week", `seven_day_opus` ->
+/// "week (opus)"; None for fields that are not usage windows.
+fn claude_window_label(key: &str) -> Option<String> {
+    match key {
+        "five_hour" => Some("5h window".to_string()),
+        "seven_day" => Some("week".to_string()),
+        _ => key.strip_prefix("seven_day_").filter(|rest| !rest.is_empty()).map(|rest| format!("week ({})", rest.replace('_', " "))),
+    }
 }
 
 type ClaudeRecord = (Map<String, Value>, String, Option<DateTime<Utc>>);
@@ -1415,16 +1321,6 @@ mod tests {
         assert_eq!(shares.iter().map(|s| s.2).sum::<i64>(), 100);
         assert_eq!(shares.last().unwrap().0, OTHER_MODELS);
         assert_eq!(shares[0].0, "c");
-    }
-
-    #[test]
-    fn pricing_strips_date_and_path() {
-        assert_eq!(price_for("anthropic/claude-opus-4-1-20250805").unwrap().0, 15.0);
-        assert_eq!(price_for("claude-opus-9").unwrap().0, 4.0);
-        assert!(price_for("llama").is_none());
-        let (cost, known) = estimate_cost("claude-sonnet-4", 1_000_000, 0, 1_000_000, 0, 500_000);
-        assert!(known);
-        assert!((cost - (3.0 + 0.5 * 3.75 + 0.5 * 6.0)).abs() < 1e-9);
     }
 
     #[test]

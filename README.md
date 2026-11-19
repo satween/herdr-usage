@@ -79,8 +79,25 @@ newer, so edits show up when the pane is reopened.
 `$HERDR_PLUGIN_CONFIG_DIR/config.json` (optional):
 
 ```json
-{ "refresh_seconds": 300, "agents": ["claude", "codex", "pi", "opencode"] }
+{ "refresh_seconds": 300, "agents": ["claude", "codex", "pi", "opencode"], "prices": "models.dev" }
 ```
+
+`"prices": "builtin"` turns off the price download described below.
+
+## Prices
+
+Pi and OpenCode log the cost of each message, and the plugin shows it as is.
+Claude Code and Codex log only tokens, so their cost is an estimate: tokens
+times the model's price.
+
+Prices come from the public [models.dev](https://models.dev) catalog. Once a day
+the plugin downloads it (a plain GET, nothing about you is sent), keeps the
+Anthropic, OpenAI and Google models and saves them to
+`$HERDR_PLUGIN_STATE_DIR/prices.json`, so a new model is priced without a new
+plugin release. A model that is not in the catalog yet gets the price of the
+newest model of its family (`claude-opus-9` is priced as the latest Opus).
+Without network access, or with `"prices": "builtin"`, a price table compiled
+into the plugin is used instead.
 
 The last reports are cached in `$HERDR_PLUGIN_STATE_DIR/cache.json` and reused
 for 60 s.
