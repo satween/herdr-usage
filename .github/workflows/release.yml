@@ -1,0 +1,81 @@
+name: release
+
+# Manual release: Actions -> release -> Run workflow (on main).
+#
+# 1. Stops if main has no commits since the last release tag.
+# 2. Runs the tests; a failure fails the run, and GitHub emails the person who
+#    started it (Settings -> Notifications -> Actions on their account).
+# 3. Sets the version to today's date, DDMMYYYY (a second release on the same
+#    day gets .2, .3, ...), commits it to main, tags it v<version> and creates
+#    a GitHub release with generated notes.
+#
+# Only the repository owner can run it: workflow_dispatch needs write access,
+# and the job is skipped for anyone else and in forks.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.actor == github.repository_owner && github.repository == 'satween/herdr-usage' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Check for changes since the last release
+        id: changes
+        run: |
+          last=$(git tag --list 'v*' --sort=-creatordate | head -n 1)
+          if [ -n "$last" ] && [ "$(git rev-list --count "$last..HEAD")" -eq 0 ]; then
+            echo "::notice::Nothing to release: main has no commits since $last"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Last release: ${last:-none}"
+            git log --oneline "${last:+$last..}HEAD"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changes.outputs.changed == 'true'
+
+      - name: Test
+        if: steps.changes.outputs.changed == 'true'
+        run: cargo test --release --locked
+
+      - name: Pick the version
+        id: version
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          base=$(date -u +%d%m%Y)
+          version=$base
+          n=1
+          while git rev-parse -q --verify "refs/tags/v$version" >/dev/null; do
+            n=$((n + 1))
+            version="$base.$n"
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version"
+
+      - name: Commit, tag and publish
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" herdr-plugin.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release $VERSION"
+          git tag -a "v$VERSION" -m "Release $VERSION"
+          git push origin HEAD:main "v$VERSION"
+          gh release create "v$VERSION" --title "$VERSION" --generate-notes --verify-tag

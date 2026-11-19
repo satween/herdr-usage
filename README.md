@@ -68,6 +68,17 @@ The plugin is one Rust binary, built from source: you need `cargo`
 same step on `herdr plugin install`) and rebuilds it whenever the sources are
 newer, so edits show up when the pane is reopened.
 
+## Releasing
+
+Releases are cut by hand from `main` with the `release` workflow (Actions ->
+release -> Run workflow); only the repository owner can run it. It checks that
+`main` has commits since the last release, runs the tests, sets `version` in
+`herdr-plugin.toml` to today's date (`DDMMYYYY`, `.2` for a second release that
+day), commits that to `main`, tags it `v<version>` and creates a GitHub release.
+If the tests fail nothing is released and GitHub emails the owner.
+
+Install a specific release with `herdr plugin install satween/herdr-usage --ref v<version>`.
+
 ## Commands
 
 | Command | What it does |
