@@ -3,6 +3,7 @@
 //! Commands: once (print), watch (interactive pane), open (open the pane).
 
 mod agents;
+mod prices;
 mod keys;
 mod render;
 
@@ -11,6 +12,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -33,14 +35,19 @@ const PANE_ENTRYPOINT: &str = "usage";
 struct Config {
     refresh_seconds: u64,
     agents: Vec<String>,
+    /// Fetch prices from the models.dev catalog (`"prices": "builtin"` turns
+    /// it off and uses only the table compiled in).
+    online_prices: bool,
 }
 
 /// `$HERDR_PLUGIN_CONFIG_DIR/config.json`: `refresh_seconds` (>= 30) and
-/// `agents` (a subset of the known collectors, in display order).
+/// `agents` (a subset of the known collectors, in display order), `prices`
+/// (`"models.dev"`, the default, or `"builtin"` for no network fetch).
 fn load_config() -> Config {
     let mut config = Config {
         refresh_seconds: DEFAULT_REFRESH_SECONDS,
         agents: COLLECTORS.iter().map(|s| s.to_string()).collect(),
+        online_prices: true,
     };
     let Some(dir) = std::env::var_os("HERDR_PLUGIN_CONFIG_DIR").filter(|d| !d.is_empty()) else {
         return config;
@@ -62,6 +69,9 @@ fn load_config() -> Config {
         if refresh >= MIN_REFRESH_SECONDS {
             config.refresh_seconds = refresh as u64;
         }
+    }
+    if let Some(source) = user.get("prices").and_then(Value::as_str) {
+        config.online_prices = source != "builtin";
     }
     if let Some(Value::Array(list)) = user.get("agents") {
         let known: Vec<String> =
@@ -126,6 +136,15 @@ impl Cache {
         if let Ok(json) = serde_json::to_string(&file) {
             let _ = fs::write(path, json);
         }
+    }
+}
+
+/// Starts the daily price catalog download when it is due (see `prices`).
+fn refresh_prices(config: &Config) -> Option<JoinHandle<()>> {
+    if config.online_prices {
+        prices::refresh()
+    } else {
+        None
     }
 }
 
@@ -264,6 +283,10 @@ fn read_input(timeout_ms: i32) -> Option<Vec<u8>> {
 // ---------------------------------------------------------------------------
 
 fn cmd_once(config: &Config) -> u8 {
+    // At most once a day: wait for the new prices so this report uses them.
+    if let Some(job) = refresh_prices(config) {
+        let _ = job.join();
+    }
     let reports = collect(config, &mut Cache::load(), false);
     let style = Style::new(isatty(libc::STDOUT_FILENO) && !no_color());
     let (width, _) = terminal_size();
@@ -329,6 +352,7 @@ fn cmd_watch(config: &Config) -> u8 {
     let mut needs_fetch = true;
     let mut force = false;
     let mut last_fetch = Instant::now();
+    let mut price_job = refresh_prices(config);
     let code = loop {
         let signal = SIGNALLED.load(Ordering::SeqCst);
         if signal != 0 {
@@ -347,6 +371,9 @@ fn cmd_watch(config: &Config) -> u8 {
                 offset = scroll_to(offset, None, page_size(&note) as i64, lines.len() as i64);
                 let status: String = "refreshing\u{2026}".chars().take(width).collect();
                 draw(&lines, &style.dim(&status), &note, offset as usize);
+            }
+            if price_job.is_none() {
+                price_job = refresh_prices(config);
             }
             reports = collect(config, &mut cache, force);
             last_fetch = Instant::now();
@@ -380,6 +407,12 @@ fn cmd_watch(config: &Config) -> u8 {
         }
         if last_fetch.elapsed().as_secs_f64() >= config.refresh_seconds as f64 {
             needs_fetch = true;
+        }
+        if price_job.as_ref().is_some_and(JoinHandle::is_finished) {
+            // New prices: recount now rather than at the next refresh.
+            price_job = None;
+            needs_fetch = true;
+            force = true;
         }
     };
     drop(screen);
