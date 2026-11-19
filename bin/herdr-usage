@@ -1,0 +1,24 @@
+#!/bin/sh
+# Launches the plugin binary on macOS and Linux.
+#
+# Builds target/release/herdr-usage with cargo when it is missing or older
+# than the sources, so edits show up on the next pane start.
+#
+# `--prepare` only makes sure a binary exists (the plugin's build hook).
+set -e
+root=$(cd "$(dirname "$0")/.." && pwd)
+built="$root/target/release/herdr-usage"
+PATH="$PATH:$HOME/.cargo/bin"
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "herdr-usage: cargo not found; install Rust (https://rustup.rs) to build the plugin" >&2
+  exit 1
+fi
+
+if [ ! -x "$built" ] || [ -n "$(find "$root/src" "$root/Cargo.toml" "$root/Cargo.lock" -newer "$built" 2>/dev/null | head -n 1)" ]; then
+  echo "Building herdr-usage…" >&2
+  cargo build --release --quiet --manifest-path "$root/Cargo.toml"
+fi
+
+[ "$1" = "--prepare" ] && exit 0
+exec "$built" "$@"

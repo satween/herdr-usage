@@ -1,0 +1,22 @@
+id = "herdr-usage"
+name = "Agent Usage"
+version = "0.2.0"
+min_herdr_version = "0.8.2"
+description = "Universal coding-agent usage: tokens, cost and model stats for Claude Code, Codex, Pi and OpenCode (API key or subscription, with rate-limit windows for plan sign-ins)."
+platforms = ["linux", "macos"]
+
+# Builds the binary with cargo (see bin/herdr-usage).
+[[build]]
+command = ["sh", "bin/herdr-usage", "--prepare"]
+
+[[panes]]
+id = "usage"
+title = "Agent usage"
+placement = "split"
+direction = "right"
+command = ["sh", "bin/herdr-usage", "watch"]
+
+[[actions]]
+id = "open"
+title = "Show agent usage"
+command = ["sh", "bin/herdr-usage", "open"]
